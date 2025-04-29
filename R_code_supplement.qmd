@@ -1,0 +1,1023 @@
+---
+title: "R code Supplement"
+author: "Yongxi Long"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+   # html:
+   #    self-contained: true
+  pdf:
+    fig-pos: H
+toc: TRUE
+bibliography: references.bib
+link-citations: true
+linkcolor: blue
+csl: apa-6th-edition.csl
+editor: visual
+---
+
+# Introduction
+
+This R code Supplement details all three simulation studies we describe in the main paper and reproduces tables and figures. In this Knitted PDF version, we hide some code chunks for readability, if you would like to run the whole script, you can find a complete Quarto Markdown file along with simulation results on [https://github.com/Yongxi-Long/PO-assumption](https://github.com/Yongxi-Long/PO-assumption).
+
+# Load required packages and user-defined functions
+
+```{r,warning=FALSE}
+rm(list = ls())
+suppressPackageStartupMessages(
+  {
+    library(VGAM) # for the proportional odds model vglm()
+    library(MASS) # also the the proportional odds model polr ()
+    library(brant) # for the Brant test of the proportional odds assumption
+    library(nnet) # for the multinomial logit model multinom()
+    library(ggplot2) # for plotting
+    library(gridExtra) # for arranging plots
+    library(genodds) # for calculating win odds
+    library(dplyr) # for data manipulation
+    library(ggsci) # for nice color scheme
+    library(kableExtra) # for nice tables
+    library(DescTools) # for Cochran-Armitage test
+    library(insight) # for get_df(), getting model degree of freedom
+  }
+)
+#' Function to suppress automatic printing of some R function
+#' so that the console will not be overwhelmed by messages when
+#' running the simulation
+hush=function(code){
+  sink("NUL") # use /dev/null in UNIX
+  tmp = code
+  sink()
+  return(tmp)
+}
+
+#' Function to perform logistic regression for each cut off value
+#' data: dataframe containing relevant variables
+#' formula: a formual specifying outcome ~group
+#' ScoreName: character string specifying the name of the ordinal score
+#' ScoreValues: unique values of the ordinal score
+#' upper: whether modelling the binary logit of P(Y>=k) or P(Y<=k)
+PerformLogReg <- function(data,formula,ScoreName,ScoreValues,upper=FALSE)
+{ 
+  mod_multinom <- vglm(formula = formula,
+                       data = data,
+                       family = cumulative(parallel=FALSE,reverse = upper))
+  # prepare row name for each binary OR
+  symbol <- ifelse(upper," >= "," <= ")
+  cutpoints <- (1-upper)*(ScoreValues[-length(ScoreValues)])+upper*ScoreValues[-1]
+  rnames <- paste0(ScoreName,symbol,cutpoints)
+  # prepare the output data frame of binary ORs
+  # binary ORs for each cut-point
+  b_ORs <- exp(mod_multinom@coefficients[-(1:(length(cutpoints)))]) 
+  # upper and lower CI for binary ORs
+  b_ORs_CI <- exp(confint(mod_multinom)[-(1:(length(cutpoints))),]) 
+  ORs <- data.frame(cbind(b_ORs,b_ORs_CI))
+  colnames(ORs) <- c("OR","lower95CI","upper95CI")
+  rownames(ORs) <- rnames
+  return(ORs)
+}
+
+#' Function to calculate the new multinomial probabilities 
+#' lnORs: shifted log OR at each cut-point, if assume common OR then can supply
+#' a single log OR
+#' p0: the starting multinomial probabilities 
+#' common : whether assume common OR, if so the first element of input lnORs
+#' will be repeated for every cutpoint
+calculate_multinomial_probabilities <- function(lnORs,p0,common=TRUE) {
+  # number of ordinal categories
+  k <- length(p0)
+  if(common) lnORs = rep(lnORs[1],k-1)
+  # cumulative logit of p0
+  logit0 <- -qlogis(cumsum(p0))[-k]
+  # cumulative logit of p1 is shifted by supplied log ORs
+  logit1 <- logit0 + lnORs
+  # get cumulative probabilities for p1
+  cump1 <- plogis(-logit1)
+  # get multinomial probabilities for all categories
+  p1 <- c(cump1,1)-c(0,cump1)
+  return(p1)
+}
+
+#' Function to do various tests
+#' y0: ordinal outcome of the control group
+#' y1: ordinal outcome of the treated group
+#' test.type: type of the test, one of :
+#' "t": t-test
+#' "MW": Mann-Whitney test
+#' "CA": Cochran-Armitage linear trend test
+#' "chi-square": chi-square test
+#' "PO": common odds ratio likelihood ratio/wald test from the PO model
+#' "POA_LRT": likelihood ratio test of the proportional odds assumption
+#' "POA_Brant": Brant test of the proportional odds assumption
+#' df: whether to output details of the test, including test statistics and degrees
+#' of freedom,default is FALSE
+Perform_test <- function(y0,y1,test.type,detail = FALSE)
+{
+  if(test.type=="t")
+  {
+    t.test <- tryCatch(t.test(y0,y1),
+                 error=function(cond){})
+    if(is.null(t.test))
+    {
+      return(NULL)
+      warning("t test failed!")
+    } else
+    {
+      pval <- t.test$p.value
+      teststat <- t.test$statistic
+      df <- t.test$parameter
+    }
+    
+  } 
+  if (test.type=="MW")
+  {
+    MW.test <- tryCatch(wilcox.test(y1,y0,exact = FALSE),
+                     error=function(cond){})
+    if(is.null(MW.test))
+    {
+      return(NULL)
+      warning("MW test failed!")
+    } else
+    {
+      pval <- MW.test$p.value
+      teststat <- MW.test$statistic
+      df <- MW.test$parameter
+    }
+  } 
+  if (test.type=="CA")
+  {
+    y <- c(y0,y1)
+    group <- rep(c(0,1),c(length(y0),length(y1)))
+    tab <- table(y,group)
+    CA.test <- tryCatch(
+      {
+        CochranArmitageTest(x=tab,alternative = "two.sided")
+      },
+      error=function(cond){}
+    )
+    if(is.null(CA.test))
+    {
+      return(NULL)
+      warning("Cochran-Armitage test failed!")
+    } else
+    {
+      pval <- CA.test$p.value
+      teststat <- CA.test$statistic
+      df <- CA.test$parameter
+    }
+  }
+  if (test.type=="chi-square")
+  {
+    y <- c(y0,y1)
+    group <- rep(c(0,1),c(length(y0),length(y1)))
+    tab <- table(y,group)
+    chi.square.test <- tryCatch(
+      {
+        suppressWarnings(chisq.test(x=tab))
+      },
+      error=function(cond){}
+    ) 
+    if(is.null(chi.square.test))
+    {
+      return(NULL)
+      warning("Chi-square test failed!")
+    } else
+    {
+      pval <- chi.square.test$p.value
+      teststat <- chi.square.test$statistic
+      df <- chi.square.test$parameter
+    }
+  }
+  if (test.type=="PO")
+  {
+    # fit a PO model
+    y <- c(y0,y1)
+    group <- rep(c(0,1),c(length(y0),length(y1)))
+    df <- data.frame(y=y,group=group)
+    po_mod <- try(suppressWarnings(vglm(y~group,data = df,
+                                        family = cumulative(parallel = TRUE))
+    ))
+    # if the model dose not converge due to empty cells
+    # we do the firth correction (add 0.5)
+      if(inherits(po_mod,"try-error"))
+        {
+          return(NULL)
+          warning("Proportional odds model failed to converge!")
+        }
+    # Wald test
+    wald.teststat <- coef(po_mod)["group"]^2/vcov(po_mod)["group","group"]
+    pval.wald <-  pchisq(q=wald.teststat,df=1,lower.tail = FALSE) |> as.numeric()
+    # LRT (manual coding)
+    # lrtest() function does not work within a loop environment
+    # it calls update() which vglm() dose not support
+    null_mod <- vglm(y~1,data = df,
+                     family = cumulative(parallel = TRUE))
+    LRT.teststat <- -2*(logLik(null_mod) - logLik(po_mod))
+    pval.lrt  <- pchisq(q=LRT.teststat,df=1,lower.tail = FALSE)
+    pval <- c("Wald"= pval.wald,"LRT"=pval.lrt)
+    teststat <- c("Wald"= wald.teststat,"LRT"=LRT.teststat)
+    df <- c("Wald"= 1,"LRT"=1)
+  }
+  if (test.type=="POA_LRT")
+  {
+    y <- c(y0,y1)
+    group <- rep(c(0,1),c(length(y0),length(y1)))
+    df <- data.frame(y=y,group=group)
+    # full model without PO assumption
+    mod_full <- try(suppressWarnings(hush(multinom(y ~ group, data = df))))
+    # reduced model (proportional odds model)
+    mod_reduced <- try(suppressWarnings(vglm(y ~group,
+                       data = df,
+                       family = cumulative(parallel = TRUE))))
+    if(inherits(mod_full,"try-error") | inherits(mod_reduced,"try-error"))
+    {
+      return(NULL)
+      warning("The non-proportional odds model (fuller model) failed to converge!")
+    } else
+    {
+      # LRT for proportional odds assumption
+      # (manual coding)
+      # lrtest() function does not work within a loop environment
+      # it calls update() which vglm() dose not support
+      teststat <- -2*(logLik(mod_reduced) - as.numeric(logLik(mod_full)))
+      df <- mod_full$edf - (mod_reduced@df.total - mod_reduced@df.residual)
+      pval <- pchisq(q=teststat,df=df,lower.tail = FALSE)
+    }
+  }
+  if(test.type=="POA_Brant")
+  {
+    y <- c(y0,y1)
+    group <- rep(c(0,1),c(length(y0),length(y1)))
+    df <- data.frame(y=y,group=group) |>
+      mutate(y=ordered(y))
+    mod_po <- try(polr(y ~ group,data = df,Hess = TRUE))
+    if(inherits(mod_po,"try-error"))
+    {
+      warning("The proportional odds model failed to converge!")
+    } else
+    {
+      brant_test = hush(brant(mod_po))
+      pval <- brant_test["group","probability"]
+      teststat <- brant_test["group","X2"]
+      df <- brant_test["group","df"]
+    }
+  }
+  if(detail)
+  {
+    return(list("pval"=pval,
+                "teststat"=teststat,
+                "df"=df))
+  } else
+  {
+    return(pval)
+  }
+}
+```
+
+# Simulaion 1: Power comparison of tests that target a general shift effect
+
+## Aim
+
+This section shows the simulation study we reported in Figure 3. We aim to show the similarity of power for one type of tests, namely tests that are targeting a general shift effect. We compare power among five such tests: two-sample independent t-test, two-sample independent Mann-Whitney U test, Cochran-Armitage test for trend(also called the linear-by-linear association test), Wald test and likelihood ratio test from the PO model.
+
+## Simulation setup
+
+We set up our simulation as follows:
+
+-   Suppose the ordinal outcome has five categories.
+-   We make the categorical probabilities of the control group equally likely and vary the categorical probabilities of the treatment group from very right skewed to very left skewed (see @fig-all-distributions below). By this construction, we obtain a series of shift effects that vary from "strong negative shift trend" -- "moderate negative shift trend" -- "almost not shift, so null" -- "moderate positive shift trend" -- "strong positive shift trend", as shown by the log common odds ratio being from -2 to 2 on the x-axis of Figure 3 in the main manuscript.
+-   We investigate two total sample sizes: n = 20 and n = 40, both with 1:1 randomization.
+
+```{r,warning=FALSE,echo=FALSE}
+#| label: fig-all-distributions
+#| fig-cap: Distribution of the ordinal outcome of the control group (row 1 column 1) and distributions of the ordinal outcome of the treatment group varied from right skewed to left skewed.
+#| fig-height: 5
+#| fig-width: 6
+# distribution of the control group, fixed and equally likely for each category
+p0 <- rep(1/5,5)
+# distribution of the treatment group varies from a negative shift to a positive
+# shift compared to the control group
+p1_start <- rep(1/5,5)
+logORs <- seq(-2,2,by=0.2)
+df <- data.frame(category=as.character(1:length(p0)),percentage=p0)
+plot_p0 <- list(ggplot(df,aes(category,percentage))+
+     geom_col(aes(fill=factor(category)),show.legend = FALSE)+
+     theme(
+       axis.title.x = element_text(size=8),
+       axis.title.y = element_text(size=8),
+       panel.border = element_blank(),
+       panel.background = element_rect(fill = "white")  
+     )+
+       ylim(c(0,0.9))+
+  scale_fill_nejm())
+plots_p1 <- sapply(logORs, function(logOR)
+  {
+   p1 <- calculate_multinomial_probabilities(logOR,p1_start)
+   df <- data.frame(category=as.character(1:length(p0)),
+                    percentage=p1)
+   p <- ggplot(df,aes(category,percentage))+
+     geom_col(aes(fill=factor(category)),show.legend = FALSE)+
+     theme(
+       axis.title.x = element_text(size=8),
+       axis.title.y = element_text(size=8),
+       panel.border = element_blank(),
+       panel.background = element_rect(fill = "white")  
+     )+
+     ylim(c(0,0.9))+
+     scale_fill_nejm()
+   return(p)
+},simplify = FALSE)
+grid.arrange(grobs=c(plot_p0,plots_p1),
+          nrow = 5,ncol=5)
+```
+
+## Run the simulation
+
+It can take several hours to run. The simulation results are available under the folder simulation_results titled "simstudy1_comparison_shift_tests_n20.RData" for sample size 20 and "simstudy1_comparison_shift_tests_n40.RData" for sample size 40.
+
+```{r,eval=FALSE}
+# number of iterations for the simulation
+nsim <- 1e4
+sample_size <- c(20,40) # total sample size
+for(n in sample_size) # do this for every sample size
+{
+  # initialize a list to store all results for every logOR
+  results <- vector(mode = "list",length = length(logORs))
+  names(results) <- as.character(logORs)
+  for(logOR in logORs) # do this for very logOR of group A
+  {
+    # get the multinomial probabilities for group A
+    p1 <- calculate_multinomial_probabilities(logOR,p1_start)
+    # vectors to store the results
+    pvals <- data.frame(matrix(NA,ncol = 5,nrow = nsim))
+    colnames(pvals) <- c("t_test","MW_test","CA_test",
+                     "PO_Wald","PO_LRT")
+    for(i in 1:nsim)
+    {
+        set.seed(i*8)
+        y1 <- sample(1:length(p1),size=n/2,replace = TRUE,prob = p1)
+        # avoid samples all of the sample category
+        y0 <- sample(1:length(p0),size = n/2,replace = TRUE,prob = p0)  
+        # t-test, fails if both y1 and y0 are all constants 
+        pvals[i,"t_test"] <- Perform_test(y0,y1,"t") 
+        
+        # Mann-Whitney test
+        pvals[i,"MW_test"] <- Perform_test(y0,y1,"MW")
+        
+        # Cochran-Armitage test
+        pvals[i,"CA_test"] <- Perform_test(y0,y1,"CA")
+        
+        # PO model
+        pvals_PO <- Perform_test(y0,y1,"PO")
+        pvals[i,"PO_Wald"] <-  pvals_PO["Wald"]
+        pvals[i,"PO_LRT"] <- pvals_PO["LRT"]
+    } # end of simulation for one logOR
+  results[[as.character(logOR)]] <- pvals
+} # end of simulation for one sample size of all logOR values
+# save results for each sample size
+save(results,
+     file = paste0("simulation_results/simstudy1_comparison_shift_tests_n",
+                   n,".RData"))
+}
+```
+
+## Plot the power comparison curve
+
+```{r,warning=FALSE,echo=FALSE}
+#| fig-cap: "Figure 3 from the main paper. Comparison of power among Cochran-Armitage test for trend/linear-by-linear association test, two-sample independent Mann-Whitney U test, likelihood ratio (LR) test from the PO model, Wald test from the PO model, and two-sample independent t-test. The ordinal distribution of the treatment group varies from right skewed to left skewed while the ordinal categories of the control group is equally distributed. This construction makes the log common odds ratio of treatment versus control vary from negative from null to positive."
+#| fig-width: 8
+#| fig-height: 5
+# prepare the data frame
+# get the power
+power_df_list <- list()
+for(n in c(20,40))
+{
+load(paste0("simulation_results/simstudy1_comparison_shift_tests_n",
+            n,".RData"))
+power_t_test <- sapply(results, function(results_i)
+{ 
+  mean(results_i[,"t_test"]<0.05,na.rm = TRUE)}
+  )
+power_MW_test <- sapply(results, function(results_i)
+{ 
+mean(results_i[,"MW_test"]<0.05,na.rm = TRUE)}
+  )
+power_CA_test <- sapply(results, function(results_i)
+  {
+  
+  mean(results_i[,"CA_test"]<0.05,na.rm = TRUE)
+})
+power_PO_wald <- sapply(results, function(results_i)
+{ 
+mean(results_i[,"PO_wald_lrm"]<0.05,na.rm = TRUE)}
+  )
+power_PO_LRT <- sapply(results, function(results_i)
+{ 
+mean(results_i[,"PO_LRT_lrm"]<0.05,na.rm = TRUE)}
+  )
+power_df_list <- c(power_df_list,list(data.frame(
+  power = c(power_t_test,power_MW_test,power_CA_test,power_PO_wald,power_PO_LRT),
+  test_type = rep(c("t-test","Mann-Whitney U test","Cochran-Armitage test","PO model Wald test","PO model LR test"),each=length(logORs)),
+  logcOR = rep(logORs,5)
+)))
+}
+power_df <- bind_rows(power_df_list,.id = "type")
+power_df$sample_size <- rep(c(10,20),each=length(logORs)*5)
+sample_size_labels <- paste0("Total sample size n=",c(20,40), " (1:1 allocation)")
+names(sample_size_labels) <- c(10,20)
+plot.power.comparison <- ggplot(power_df,aes(x=logcOR,y=power,group=test_type,color=test_type))+
+  facet_wrap(~sample_size,
+             labeller = labeller(sample_size=sample_size_labels))+
+  geom_line()+
+  geom_point()+
+  theme_bw()+
+  geom_abline(intercept = 0.05,slope=0,color="red",linetype=2)+
+  geom_text(aes(x=1.7,y=0.08),label="0.05",color="red")+
+  labs(y="Power",x="log common OR of group A vs. group B",
+       color="Test type")+
+  theme(
+    strip.background = element_rect(color="black", fill="white"),
+    legend.position = "bottom",
+    legend.title = element_text(size=9),
+    legend.text = element_text(size=9)
+  )+
+  scale_color_nejm()+
+  guides(color=guide_legend(nrow = 2,byrow=TRUE))
+plot.power.comparison
+```
+
+# Simulation 2: Power comparison of tests that target different alternatives
+
+## Aim
+
+This section shows the simulation study reported in Figure 4. We aim to contrast the power difference between two type of tests: 1) a *specialized* test that targets a shift effect, here we choose the likelihood ratio test from the PO model for illustration, but other tests of the same type such as Mann-Whitney test should perform similarly as we have shown in Simulation 1. 2) a *general* test that broadly detects any difference between the two ordinal outcome distributions, we choose the widely used chi-square test for illustration.
+
+## Simulation setup
+
+We set up our simulation as follows:
+
+-   Suppose the ordinal outcome has five categories.
+
+-   The sample size is fixed at 100 subjects.
+
+-   The distribution of the ordinal outcome in control group is equally likely. We investigate three effect patterns for the treatment group. The estimands (true common odds ratio) of the three scenarios are weighted average of the binary odds ratios specified by formula 2.5 from [@mccullagh1980regression].
+
+$$w_j \propto \lambda_j(1-\lambda_j)(p_j+p_{j+1})$$
+
+where the weight for the $j$-th cut-point is proportional to the product of the cumulative probability until the $j$-th cut-point $\lambda_j$, the cumulative probability beyond the $j$-th cut-point $1-\lambda_j$, and the sum of two adjacent categorical probabilities beside the $j$-th cut-point $p_j+p_{j+1}$.
+
+-   Scenario 1: an exact shift effect, the common odds ratio is 2.72 for all four cut-points. The likelihood ratio test from the PO model is expected to be more powerful than the chi-square test.
+-   Scenario 2: a semi-shift. The binary log odds ratios are 0.5, 1, 1, 0.5 for the four cut-points respectively. The effects are all positive but of different magnitude. The common odds ratio is 2.19. The likelihood ratio test from the PO model should have comparable power with the chi-square test.
+-   Scenario 3: a non-shift effect. The binary log odds ratios are -0.7, -0.1, 0.1, 0.7 for the four cut-points respectively. So the effects are of opposite directions and the common odds ratio is 1. Since the common odds ratio is exactly 1 in this scenario, the power of the PO model is expected to be close to the nominal level of $5\%$, while the chi-square test is expected to be much more powerful.
+
+```{r,echo=FALSE}
+# sample size per arm, total = 2*n
+n <- 50
+nsim <- 1e4
+p0 <- rep(1/5,5)
+# binary log ORs for each cut point of each scenario
+b_lnORs <- list(1,
+                c(0.5,1,1,0.5),
+                c(-0.7,-0.1,0.1,0.7))
+# shift effect towards non-shift effect
+p1s <- list(calculate_multinomial_probabilities(lnORs = b_lnORs[[1]],
+                                                p0=p0,
+                                                common = TRUE),
+           calculate_multinomial_probabilities(lnORs = b_lnORs[[2]],
+                                               p0=p0,
+                                               common = FALSE),
+           calculate_multinomial_probabilities(lnORs = b_lnORs[[3]],
+                                               p0=p0,
+                                               common = FALSE))
+# common odds ratio for the three scenarios
+cOR_3sce <- sapply(1:length(b_lnORs), function(i)
+{
+  # binary log ORs
+  lnORs <- b_lnORs[[i]]
+  # multinomial probabilities for group 1
+  p1 <- p1s[[i]]
+  # pooled multinomial probabilities for group 0 and 1
+  p <- (p0+p1)/2
+  # the weights, from 2.5 of McCullagh
+  lambda_j <- cumsum(p)[-length(p)]
+  pi_j <- p[-length(p)]
+  pi_jplus1 <- p[-1]
+  weights <- lambda_j*(1-lambda_j)*(pi_j+pi_jplus1)
+  # normalize 
+  weights <- weights/sum(weights)
+  # common OR: weighted average of binary log ORs then exponentiate
+  exp(sum(weights*lnORs))
+})
+cat("common odds ratios for the 3 scenarios are: ")
+print(round(cOR_3sce,2))
+```
+
+## Run the simulation
+
+```{r,eval=FALSE}
+res <- vector(mode = "list",length = length(p1s))
+count <- 1
+for(p1 in p1s)
+{
+  pvals <- data.frame(matrix(nrow=nsim,ncol=4))
+  colnames(pvals) <- c("MW","chi-square","PO_Wald","PO_LRT")
+for(i in 1:nsim)
+{
+  y0 <- sample(1:length(p0),size = n,replace = TRUE,p0)
+  y1 <- sample(1:length(p1),size = n,replace = TRUE,p1)
+  # MW test
+  pvals[i,"MW"] <- Perform_test(y0,y1,"MW")
+  # chi-square test
+  pvals[i,"chi-square"] <- Perform_test(y0,y1,"chi-square")
+  # test if cOR = 1 from a PO model, both LRT and Wald test
+  pvals[i,c("PO_Wald","PO_LRT")] <- Perform_test(y0,y1,"PO")
+}
+res[[count]] <- pvals
+count <- count + 1
+}
+```
+
+## Plot the power comparison along with each scenario below
+
+```{r,warning=FALSE,echo=FALSE}
+#| fig-cap: "Figure 4 from the main paper. Scenario 1: an exact shift effect. The common odds ratio (cOR) is 2.7. The PO model (likelihood ratio test) has superior power over the chi-square test. Scenario 2: a semi-shift effect such that the positive trend is larger in categories in the middle than at the ends. The cOR is 2.2.  The PO model and the chi-square test have similar power. Scenario 3: a non-shift effect with opposite trends. The cOR is 1.0. The chi-square test has superior power over the PO model."
+# visualization
+load("simulation_results/simstudy2_explain_shift_nonshift_tests.RData")
+# visualize power for the PO test vs chi-square test for these 3 scenarios
+tmp <- as.vector(t(sapply(res, function(x)
+  colMeans(x<0.05)
+)))
+power_compare <- data.frame(
+  power = tmp,
+  test_type = rep(c("MW","Chisq","PO_Wald","PO_LRT"),each=length(p1s)),
+  scenario = rep(1:length(p1s),4)
+)
+top.plot <- power_compare |>
+  filter(test_type=="Chisq" | test_type =="PO_LRT") |>
+  # we show the LR test from the PO model, readers can also compare
+  # the Wald test from the PO model by un-commenting the following code
+  # and commenting out the previous code
+  # filter(test_type=="Chisq" | test_type =="PO_Wald") |>
+  ggplot(aes(x=factor(scenario),y=power,fill=factor(test_type)))+
+  # facet_wrap(~scenario)+
+  geom_bar(stat="identity",alpha=0.9,position = "dodge") +
+  labs(
+    x = "",
+    y = "Power",
+    fill="Type of test"
+  )+ 
+  theme_minimal()+
+  scale_fill_manual(values = c("#7AA6DCFF","#CD534CFF"),
+                    labels=c("Chisq"="Chi-square","PO_LRT"="PO model"))+
+  #scale_fill_hue()+
+  theme(
+    axis.text.x = element_blank(),
+    plot.margin = unit(c(0,0,0,0),"cm"),
+    axis.ticks.x = element_blank(),
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=10),
+    axis.title.y = element_text(size = 10)
+  )
+# visualize 5 category probabilities for 6 scenarios
+cprob_df <- data.frame(
+  scenario = rep(rep(paste0("Scenario ",1:length(p1s)),each=5),2),
+  category = rep(1:5,2*length(p1s)),
+  prob = c(as.vector(unlist(p1s)),rep(p0,length(p1s))),
+  group = rep(c("Treatment","Control"),each=5*length(p1s))
+)
+bottom.plot <- ggplot(cprob_df,aes(x=factor(category),y=prob,fill=factor(group)))+
+  facet_wrap(~scenario)+
+  geom_bar(stat="identity",alpha=0.9,position = "dodge") +
+  labs(
+    x = "Category",
+    y = "Probability",
+    fill="Group"
+  )+ 
+  theme_minimal()+
+  scale_fill_manual(values = c("#108b96","#f3993a"))+
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=10),
+    axis.title = element_text(size = 10),
+    plot.margin = unit(c(0,0,0,0),"cm")
+  )
+grid.arrange(top.plot,bottom.plot,heights=c(7,3))
+```
+
+# Simulation 3: Inflation of type I error by pre-testing the PO assumption
+
+## Aim
+
+This section shows the simulation study We described in the last paragraph of Section 3 \`\`Testing the treatment effect" in the main paper. We aim to show the type I error inflation if we pre-test the PO assumption and choose the test for the treatment effect based on the PO assumption test result.
+
+Because we want to investigate type I error, we construct the simulation scenario under the null hypothesis, that is, when the treatment has no effect and the outcome distributions between two groups are the same. In theory we can assign any shape to the outcome distribution as long as it is the same between the two groups. For the ease of understanding, we assume 5 outcome categories with equal probabilities of 1/5 in both groups. Readers can freely adjust the categorical probabilities in our R code, and they would have the same qualitative conclusion.
+
+## Simulation setup
+
+We set up our simulation as follows:
+
+-   Suppose the ordinal outcome has five categories.
+
+-   The distributions of the ordinal outcome in both groups are equally likely. That is, the two groups have the same outcome distribution so this is the null situation, we do not have any treatment effect.
+
+-   We vary the sample size to see if it has an impact on the type I error probability.
+
+-   We compare three strategies:
+
+    -   Always use the likelihood ratio test from the PO model.
+    -   Always use the chi-square test.
+    -   A hybrid strategy where we first test the PO assumption at alpha level 0.05. If the test does not reject the null hypothesis of proportional odds, we use the likelihood ratio test from the PO model, otherwise we switch to the chi-square test. For the test of the PO assumption, we can use either a likelihood ratio test or a Brant test.
+
+Note that the likelihood ratio (LR) test from the PO model for the treatment effect is not to be confused with the LR test for the PO assumption. the LR test for the treatment effect from the PO model compares models @eq-mod-po to @eq-mod-null while the LR test for the PO assumption compares models @eq-mod-nonpo to @eq-mod-po.
+
+$$
+\text{logit} P(Y_i \le j) = \beta_{0j} 
+$$ {#eq-mod-null}
+
+$$
+\text{logit} P(Y_i \le j)  = \beta_{0j} + \beta_1 \text{Group}_i 
+$$ {#eq-mod-po}
+
+$$
+\text{logit} P(Y_i \le j)  = \beta_{0j} + \beta_{1j} \text{Group}_i
+$$ {#eq-mod-nonpo}
+
+## Run the simulation
+
+It can take about half an hour to run. The simulation results are available in the simulation_results folder titled "simstudy3_pretesting_uniform_null.RData" for uniform like null outcome distribution and "simstudy3_pretesting_rightskewed_null.RData" for right-skewed outcome distribution.
+
+```{r,echo=TRUE,eval=FALSE}
+# number of iterations for the simulation
+nsim <- 1e4
+# sample size per arm
+ns = c(25,50,100)
+# uniform like null distribution
+# p0 <- p1 <- rep(1/5,5)
+# we can also try any other outcome distributions, below is
+# a right skewed null distribution, readers can uncomment this line and try it out
+p0 <- p1 <- c(0.7,0.1,0.1,0.05,0.05)
+# list to store results
+pvals_list <- vector(mode = "list",length = length(ns))
+for(n in ns)
+{
+pvals <- data.frame(matrix(NA,nrow = nsim,ncol=5))
+colnames(pvals) <- c("chi-square","PO","MW","POA_LRT","POA_Brant")
+for(i in 1:nsim)
+{
+  y0 <- sample(1:length(p0),size = n,replace = TRUE,p0)
+  y1 <- sample(1:length(p1),size = n,replace = TRUE,p1)
+  # LRT for the proportional odds assumption
+  pvals[i,"POA_LRT"] <- Perform_test(y0,y1,"POA_LRT")
+  pvals[i,"POA_Brant"] <- Perform_test(y0,y1,"POA_Brant")
+  # chi-square test
+  pvals[i,"chi-square"] <- Perform_test(y0,y1,"chi-square")
+  # LRT test of the common odds ratio from the PO model
+  pvals[i,"PO"] <- Perform_test(y0,y1,"PO")["LRT"]
+  # MW test
+  pvals[i,"MW"] <- Perform_test(y0,y1,"MW")
+}
+print(n)
+pvals_list[[which(ns==n)]] <- pvals
+}
+```
+
+## Tabulate the results
+
+```{r,warning=FALSE,echo=FALSE}
+#| tbl-cap: "Type I error probabilities for different testing strategies for sample sizes 25, 50, and 100"
+load("simulation_results/simstudy3_pretesting_rightskewed_null.RData")
+ns = c(25,50,100)
+type1error_df <- data.frame(
+  tmp = 1:12
+)
+type1error_df$`Testing strategy` <- rep(c("Always use LR test from the PO model",
+                                      "Always use chi-square test",
+                                      "Pre-test the PO assumption by LR test",
+                                      "Pre-test the PO assumption by Brant test"),
+                                      each=3)
+type1error_df$`Sample size` <- rep(ns,4)
+type1error_df$`Type I error` <- rep(NA,12)
+type1error_df <- type1error_df[,-1]
+for(n in ns)
+{
+  pvals <- pvals_list[[which(ns==n)]]
+  p.hybrid.LR <- case_when(
+    pvals[,"POA_LRT"]<0.05 ~ pvals[,"chi-square"],
+    TRUE ~pvals[,"PO"]
+  )
+  p.hybrid.Brant <- case_when(
+    pvals[,"POA_Brant"]<0.05 ~ pvals[,"chi-square"],
+    TRUE ~pvals[,"PO"]
+  )
+  type1error_df$`Type I error`[type1error_df$`Sample size`==n] <- 
+    c( mean(pvals[,"PO"]<0.05),
+       mean(pvals[,"chi-square"]<0.05),
+       mean(p.hybrid.LR<0.05),
+       mean(p.hybrid.Brant<0.05))
+}
+type1error_df |>
+  kbl(digits=4) |>
+  kable_styling("striped",full_width = TRUE) |>
+  collapse_rows(columns = 1,valign = "middle")
+```
+
+# Reproduction of tables and figures
+
+## Cumulative odds ratio plot
+
+### MR CLEAN trial (Figure 1B)
+
+We show how to make the cumulative odds ratio plot step-by-step using the MR CLEAN trial as an example.
+
+1.  We use published summary data from the original trial report [@berkhemer2015randomized].
+
+```{r}
+# reconstruct dataset
+control <- c(0,rep(1, 15), rep(2, 35), rep(3, 44), 
+             rep(4, 81), rep(5, 32), rep(6, 59)) #267 patients
+intervention <- c(rep(0,6),rep(1, 21), rep(2, 49),
+                  rep(3, 43), rep(4, 52), rep(5, 13), rep(6, 49)) #233 patients
+df_MR_CLEAN <- data.frame(
+  mRS= c(intervention,control),
+  group = rep(c(1,0),c(233,267))
+)
+```
+
+2.  Fit logistic regression model to get the five binary odds ratios at each possible dichotomization
+
+```{r,message=FALSE}
+# category 0 and 1 pooled due to small group size, 
+# otherwise we have separation issues
+df_MR_CLEAN <- df_MR_CLEAN |>
+  mutate(mRS6 = mRS * (mRS >0) + 1*(mRS==0))
+# compute binary ORs
+binary_ORs <- PerformLogReg(data = df_MR_CLEAN,
+                            formula = mRS ~group,
+                            ScoreName = "mRS",
+                            ScoreValues = 0:6,
+                            upper = FALSE)
+```
+
+3.  Fit the proportional odds model to get the common odds ratio
+
+```{r}
+mod_PO_MRCLEAN <- vglm(mRS ~group, data=df_MR_CLEAN,
+                 family = cumulative(parallel = TRUE))
+# get the common odds ratio and its 95% confidence interval
+logOR <- mod_PO_MRCLEAN@coefficients["group"]
+se.logOR <- sqrt(vcov(mod_PO_MRCLEAN)["group","group"])
+cOR <- c(exp(logOR),exp(logOR-1.96*se.logOR),exp(logOR+1.96*se.logOR))
+```
+
+4.  Likelihood ratio test for the proportional odds assumption
+
+```{r}
+POA.LRT <- Perform_test(y0=df_MR_CLEAN$mRS[df_MR_CLEAN$group==0],
+                             y1=df_MR_CLEAN$mRS[df_MR_CLEAN$group==1],
+                             test.type = "POA_LRT",
+                        detail = TRUE)
+```
+
+5.  Plot the cumulative odds ratio plot
+
+```{r,warning=FALSE}
+#| fig-cap: "An exmaple of cumulative odds ratio plot for the MR CLEAN trial. The plot shows five observed cumulative binary odds ratios with 95% confidence intervals for each cut-point of the ordinal mRS outcome. The orange dashed lines show the common odds ratio based on the proportional assumption. p-value for the proportional odds assumption is from the likelihood ratio test."
+# prepare the data frame
+ORs_df <- data.frame(cbind(0:6,rbind(binary_ORs, cOR)))
+colnames(ORs_df) <- c("label","estimate","lower","upper")
+ORs_df$label <- factor(ORs_df$label,levels=0:6,
+                       labels = c(paste0("mRS <= ",0:5),"common OR"))
+
+# add extra rows under PO
+ORs_df <- rbind(ORs_df,ORs_df)
+ORs_df[8:14,2:4] <- t(replicate(7,cOR))
+ORs_df$type <- rep(c("Observed","Under PO assumption"),each=7)
+ORs_df2 <- ORs_df[14,1:4]
+plot.MR.CLEAN <- ggplot() +
+  geom_pointrange(data=ORs_df[1:13,],
+                  aes(x=label, y=estimate, 
+                  ymin=lower, ymax=upper,
+                  color=type,linetype=type),
+                  position = position_dodge(width = -0.2),linewidth=0.9,
+                  size=0.5) + 
+  geom_hline(yintercept=1, lty=2,color="coral",linewidth=0.8) +  
+  coord_flip()+  # flip coordinates (puts labels on y axis)
+  annotate("text",x=2.5,y=30,
+           label=paste0("Test for PO assumption\np = ",round(POA.LRT$pval,4),
+                        "\nLR = ",round(POA.LRT$teststat,2),
+                        "\ndf = ",POA.LRT$df),
+           color="coral")+
+  scale_x_discrete(limits=rev(levels(ORs_df$label)))+
+  scale_y_continuous(trans = "log2",limits = c(0.5,60))+
+  labs(x="",y="Odds Ratio (95% CI)")+
+  theme_light()+
+  theme(
+    axis.text.y = element_text(size=10,color="black"),
+    legend.position = c(.85,.1),
+    legend.title = element_blank(),
+    legend.background = element_blank()
+  )+
+  scale_color_manual(values=c("darkgrey","coral"))+
+  geom_pointrange(data=ORs_df2,
+                   aes(x=label, y=estimate, ymin=lower, ymax=upper),
+                   position = position_dodge(width = -0.2),linewidth=0.9,
+                   size=0.5,color="coral")
+plot.MR.CLEAN
+```
+
+### ANGEL-ASPECT trial (Figure 2A)
+
+The original trial report is [@huo2023].
+
+```{r,warning=FALSE}
+# construct trial data
+mRS_0 <- rep(1:6,c(8,18,49,60,45,45))
+mRS_1 <- rep(1:6,c(28,41,39,45,27,50))
+group <- rep(c(0,1),c(length(mRS_0),length(mRS_1)))
+df_ANGEL <- data.frame(
+  mRS = c(mRS_0,mRS_1),
+  group = group)
+```
+
+```{r,echo=FALSE,warning=FALSE}
+# separate binary ORs
+# separate ORs
+binary_ORs <- PerformLogReg(data = df_ANGEL,
+                            formula = mRS ~group,
+                            ScoreName = "mRS",
+                            ScoreValues = 1:6,
+                            upper = FALSE)
+# Fit proportional odds model
+mod_PO_ANGEL <- vglm(mRS ~group, data=df_ANGEL,
+                 family = cumulative(parallel = TRUE))
+# get the common odds ratio and its 95% confidence interval
+logOR <- mod_PO_ANGEL@coefficients["group"]
+se.logOR <- sqrt(vcov(mod_PO_ANGEL)["group","group"])
+cOR <- c(exp(logOR),exp(logOR-1.96*se.logOR),exp(logOR+1.96*se.logOR))
+# test for proportional odds assumption LRT
+POA.LRT <- Perform_test(y0=df_ANGEL$mRS[df_ANGEL$group==0],
+                             y1=df_ANGEL$mRS[df_ANGEL$group==1],
+                             test.type = "POA_LRT",
+                        detail = TRUE)
+ORs_df <- data.frame(cbind(1:6,rbind(binary_ORs, cOR)))
+colnames(ORs_df) <- c("label","estimate","lower","upper")
+ORs_df$label <- factor(ORs_df$label,levels=1:6,labels = c(paste0("mRS <= ",1:5),"common OR"))
+
+ORs_df <- rbind(ORs_df,ORs_df)
+ORs_df[7:12,2:4] <- t(replicate(6,cOR))
+ORs_df$type <- rep(c("Observed","Under PO assumption"),each=6)
+ORs_df2 <- ORs_df[12,1:4]
+plot.ANGEL <-  ggplot() +
+        geom_pointrange(data=ORs_df[1:11,],aes(x=label, y=estimate, ymin=lower, ymax=upper,
+                         color=type,linetype=type),position = position_dodge(width = -0.2),linewidth=0.9,
+                        size=0.5) + 
+        geom_hline(yintercept=1, lty=2,color="coral",linewidth=0.8) +  # add a dotted line at x=1 after flip
+       coord_flip()+  # flip coordinates (puts labels on y axis)
+   annotate("text",x=2,y=6.5,
+           label=paste0("Test for PO assumption\np = ",round(POA.LRT$pval,4),
+                        "\nLR = ",round(POA.LRT$teststat,2),
+                        "\ndf = ",POA.LRT$df),
+           color="coral",
+           size=3)+
+  scale_y_continuous(trans = "log2",limits = c(0.5,10))+
+  scale_x_discrete(limits=rev(levels(ORs_df$label)))+
+  labs(x="",y="Odds Ratio (95% CI)")+
+  theme_light()+
+  theme(
+    axis.text.y = element_text(size=10,color="black"),
+    legend.position = c(.85,.1),
+    legend.title = element_blank(),
+    legend.background = element_blank()
+  )+
+  scale_color_manual(values=c("darkgrey","coral"))+
+   geom_pointrange(data=ORs_df2,aes(x=label, y=estimate, ymin=lower, ymax=upper),
+                         position = position_dodge(width = -0.2),linewidth=0.9,
+                        size=0.5,color="coral")
+plot.ANGEL
+```
+
+### RESCUEicp trial (Figure 2B)
+
+The original trial report is [@hutchinson2016].
+
+```{r,warning=FALSE}
+# constructed trial data
+GOSE_1 <- rep(1:8,c(54,17,44,31,20,27,5,3))
+GOSE_0 <- rep(1:8,c(92,4,27,15,19,18,6,7))
+df_RESCUEicp <- data.frame(GOSE=c(GOSE_0,GOSE_1),
+                           group=rep(c(0,1),c(length(GOSE_0),length(GOSE_1))))
+```
+
+```{r,echo=FALSE,warning=FALSE}
+# separate binary ORs
+binary_ORs <- PerformLogReg(data = df_RESCUEicp,
+                            formula = GOSE ~group,
+                            ScoreName = "GOSE",
+                            ScoreValues = 1:8,
+                            upper = TRUE)
+# Fit proportional odds model
+mod_PO_RESCUEicp <- vglm(GOSE ~group, data=df_RESCUEicp,
+                 family = cumulative(parallel = TRUE,
+                                     reverse = TRUE))
+# get the common odds ratio and its 95% confidence interval
+logOR <- mod_PO_RESCUEicp@coefficients["group"]
+se.logOR <- sqrt(vcov(mod_PO_RESCUEicp)["group","group"])
+cOR <- c(exp(logOR),exp(logOR-1.96*se.logOR),exp(logOR+1.96*se.logOR))
+# test for proportional odds assumption LRT
+POA.LRT <- Perform_test(y0=df_RESCUEicp$GOSE[df_RESCUEicp$group==0],
+                             y1=df_RESCUEicp$GOSE[df_RESCUEicp$group==1],
+                             test.type = "POA_LRT",
+                        detail = TRUE)
+ORs_df <- data.frame(cbind(1:8,rbind(binary_ORs, cOR)))
+colnames(ORs_df) <- c("label","estimate","lower","upper")
+
+ORs_df$label <- factor(ORs_df$label,levels=1:8,labels = c(paste0("GOS-E >= ",2:8),"common OR"))
+
+# add extra rows under PO
+ORs_df <- rbind(ORs_df,ORs_df)
+ORs_df[9:16,2:4] <- t(replicate(8,cOR))
+ORs_df$type <- rep(c("Observed","Under PO assumption"),each=8)
+
+ORs_df2 <- ORs_df[16,1:4]
+plot.RESCUEicp <- ggplot() +
+        geom_pointrange(data=ORs_df[1:15,],aes(x=label, y=estimate, ymin=lower, ymax=upper,
+                         color=type,linetype=type),position = position_dodge(width = -0.2),linewidth=0.9,
+                        size=0.5) + 
+        geom_hline(yintercept=1, lty=2,color="coral",linewidth=0.8) +  # add a dotted line at x=0 after flip
+       coord_flip()+  # flip coordinates (puts labels on y axis)
+   annotate("text",x=5.5,y=0.12,
+            label=paste0("Test for PO assumption\np = ",round(POA.LRT$pval,4),
+                        "\nLR = ",round(POA.LRT$teststat,2),
+                        "\ndf = ",POA.LRT$df),
+            size=3,
+           color="coral")+
+  scale_x_discrete(limits=rev(levels(ORs_df$label)))+
+  scale_y_continuous(trans = "log2",limits = c(0.07,5),
+                      breaks = c(0.125,0.25,0.5,1,2,4)) +
+  labs(x="",y="Odds Ratio (95% CI)")+
+  theme_light()+
+  theme(
+    axis.text.y = element_text(size=10,color="black"),
+    legend.position = c(.15,.9),
+    legend.title = element_blank(),
+    legend.background = element_blank()
+  )+
+  scale_color_manual(values=c("darkgrey","coral"))+
+   geom_pointrange(data=ORs_df2,aes(x=label, y=estimate, ymin=lower, ymax=upper),
+                         position = position_dodge(width = -0.2),linewidth=0.9,
+                        size=0.5,color="coral")
+ plot.RESCUEicp
+```
+
+## Table 1
+
+In Table 1 of the main paper we report p-values from the likelihood ratio test of the PO model versus p-values from the chi-square test, for the MR CLEAN trial, the ANGEL-ASPECT trial, and the RESCUEicp trial. Note that in the case of the chi-square test for the RECUEicp trial we merged categories 7 and 8 because of small numbers.
+
+```{r}
+pval_tab <- data.frame(
+  Trial = c("MR CLEAN","ANGEL-ASPECT","RESCUEicp")
+)
+# MR CLEAN trial
+PO_ML <- Perform_test(y0=df_MR_CLEAN$mRS[df_MR_CLEAN$group==0],
+                           y1=df_MR_CLEAN$mRS[df_MR_CLEAN$group==1],
+                           test.type = "PO",
+                      detail = TRUE)
+# p value from the chi-square test is with 
+chi_ML <- Perform_test(y0=df_MR_CLEAN$mRS[df_MR_CLEAN$group==0],
+                            y1=df_MR_CLEAN$mRS[df_MR_CLEAN$group==1],
+                            test.type = "chi-square",
+                       detail = TRUE)
+# ANGEL-ASPECT trial
+PO_AN <- Perform_test(y0=df_ANGEL$mRS[df_ANGEL$group==0],
+                             y1=df_ANGEL$mRS[df_ANGEL$group==1],
+                             test.type = "PO",
+                      detail = TRUE)
+chi_AN <- Perform_test(y0=df_ANGEL$mRS[df_ANGEL$group==0],
+                             y1=df_ANGEL$mRS[df_ANGEL$group==1],
+                             test.type = "chi-square",
+                       detail = TRUE)
+# RESCUEicp tria;
+PO_RE <- Perform_test(y0=df_RESCUEicp$GOSE[df_RESCUEicp$group==0],
+                             y1=df_RESCUEicp$GOSE[df_RESCUEicp$group==1],
+                             test.type = "PO",
+                      detail = TRUE)
+# merge category 7 and 8 due to small cell counts
+df_RESCUEicp$GOSE_7cat <- ifelse(df_RESCUEicp$GOSE>=7,7,df_RESCUEicp$GOSE)
+chi_RE <- Perform_test(y0=df_RESCUEicp$GOSE_7cat[df_RESCUEicp$group==0],
+                             y1=df_RESCUEicp$GOSE_7cat[df_RESCUEicp$group==1],
+                             test.type = "chi-square",
+                       detail = TRUE)
+pval_tab$PO_pval <- c(PO_ML$pval["LRT"],PO_AN$pval["LRT"],PO_RE$pval["LRT"])
+pval_tab$PO_teststat <- c(PO_ML$teststat["LRT"],
+                          PO_AN$teststat["LRT"],
+                          PO_RE$teststat["LRT"])
+pval_tab$PO_df <- c(PO_ML$df["LRT"],PO_AN$df["LRT"],PO_RE$df["LRT"])
+pval_tab$chisq_pval <- c(chi_ML$pval,chi_AN$pval,chi_RE$pval)
+pval_tab$chisq_teststat <- c(chi_ML$teststat,chi_AN$teststat,chi_RE$teststat)
+pval_tab$chisq_df <- c(chi_ML$df,chi_AN$df,chi_RE$df)
+
+pval_tab |>
+  kbl() |>
+  kable_styling("striped",full_width = TRUE) 
+```
+
+# References
