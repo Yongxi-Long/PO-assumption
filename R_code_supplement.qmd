@@ -1,7 +1,7 @@
 ---
 title: "R code Supplement"
 author: "Yongxi Long"
-date: "`r format(Sys.time(), '%d %B, %Y')`"
+date: today
 format: 
    # html:
    #    self-contained: true
@@ -17,7 +17,7 @@ editor: visual
 
 # Introduction
 
-This R code Supplement details all three simulation studies we describe in the main paper and reproduces tables and figures. In this Knitted PDF version, we hide some code chunks for readability, if you would like to run the whole script, you can find a complete Quarto Markdown file along with simulation results on [https://github.com/Yongxi-Long/PO-assumption](https://github.com/Yongxi-Long/PO-assumption).
+This R code Supplement details all three simulation studies we describe in the main paper and reproduces tables and figures. In this Knitted PDF version, we hide some code chunks for readability, if you would like to run the whole script, you can find a complete Quarto Markdown file along with simulation results on <https://github.com/Yongxi-Long/PO-assumption>.
 
 # Load required packages and user-defined functions
 
@@ -51,10 +51,10 @@ hush=function(code){
 
 #' Function to perform logistic regression for each cut off value
 #' data: dataframe containing relevant variables
-#' formula: a formual specifying outcome ~group
+#' formula: a formula specifying outcome ~ group
 #' ScoreName: character string specifying the name of the ordinal score
 #' ScoreValues: unique values of the ordinal score
-#' upper: whether modelling the binary logit of P(Y>=k) or P(Y<=k)
+#' upper: whether modelling the binary logit of P(Y>=k) or P(Y<=k) (default)
 PerformLogReg <- function(data,formula,ScoreName,ScoreValues,upper=FALSE)
 { 
   mod_multinom <- vglm(formula = formula,
@@ -276,7 +276,7 @@ Perform_test <- function(y0,y1,test.type,detail = FALSE)
 
 ## Aim
 
-This section shows the simulation study we reported in Figure 3. We aim to show the similarity of power for one type of tests, namely tests that are targeting a general shift effect. We compare power among five such tests: two-sample independent t-test, two-sample independent Mann-Whitney U test, Cochran-Armitage test for trend(also called the linear-by-linear association test), Wald test and likelihood ratio test from the PO model.
+This section shows the simulation study we reported in Figure 3. We aim to show the similarity of power for one type of tests, namely tests that are targeting a general shift effect. We compare power among five such tests: two-sample independent t-test, two-sample independent Mann-Whitney U test, Cochran-Armitage test for trend (also called the linear-by-linear association test), Wald test and likelihood ratio test from the PO model.
 
 ## Simulation setup
 
@@ -331,7 +331,7 @@ grid.arrange(grobs=c(plot_p0,plots_p1),
 
 ## Run the simulation
 
-It can take several hours to run. The simulation results are available under the folder simulation_results titled "simstudy1_comparison_shift_tests_n20.RData" for sample size 20 and "simstudy1_comparison_shift_tests_n40.RData" for sample size 40.
+It can take several hours to run. The simulation results are available on GitHub under the folder simulation_results titled "simstudy1_comparison_shift_tests_n20.RData" for sample size 20 and "simstudy1_comparison_shift_tests_n40.RData" for sample size 40.
 
 ```{r,eval=FALSE}
 # number of iterations for the simulation
@@ -651,10 +651,10 @@ nsim <- 1e4
 # sample size per arm
 ns = c(25,50,100)
 # uniform like null distribution
-# p0 <- p1 <- rep(1/5,5)
+p0 <- p1 <- rep(1/5,5)
 # we can also try any other outcome distributions, below is
 # a right skewed null distribution, readers can uncomment this line and try it out
-p0 <- p1 <- c(0.7,0.1,0.1,0.05,0.05)
+# p0 <- p1 <- c(0.7,0.1,0.1,0.05,0.05)
 # list to store results
 pvals_list <- vector(mode = "list",length = length(ns))
 for(n in ns)
@@ -678,13 +678,14 @@ for(i in 1:nsim)
 print(n)
 pvals_list[[which(ns==n)]] <- pvals
 }
+save(pvals_list,file = "simulation_results/simstudy3_pretesting_uniform_null.RData")
 ```
 
 ## Tabulate the results
 
 ```{r,warning=FALSE,echo=FALSE}
 #| tbl-cap: "Type I error probabilities for different testing strategies for sample sizes 25, 50, and 100"
-load("simulation_results/simstudy3_pretesting_rightskewed_null.RData")
+load("simulation_results/simstudy3_pretesting_uniform_null.RData")
 ns = c(25,50,100)
 type1error_df <- data.frame(
   tmp = 1:12
@@ -724,7 +725,7 @@ type1error_df |>
 
 ## Cumulative odds ratio plot
 
-### MR CLEAN trial (Figure 1B)
+### MR CLEAN trial (Figure 2B)
 
 We show how to make the cumulative odds ratio plot step-by-step using the MR CLEAN trial as an example.
 
@@ -751,16 +752,16 @@ df_MR_CLEAN <- df_MR_CLEAN |>
   mutate(mRS6 = mRS * (mRS >0) + 1*(mRS==0))
 # compute binary ORs
 binary_ORs <- PerformLogReg(data = df_MR_CLEAN,
-                            formula = mRS ~group,
+                            formula = mRS6 ~group,
                             ScoreName = "mRS",
-                            ScoreValues = 0:6,
+                            ScoreValues = 1:6,
                             upper = FALSE)
 ```
 
 3.  Fit the proportional odds model to get the common odds ratio
 
 ```{r}
-mod_PO_MRCLEAN <- vglm(mRS ~group, data=df_MR_CLEAN,
+mod_PO_MRCLEAN <- vglm(mRS6 ~group, data=df_MR_CLEAN,
                  family = cumulative(parallel = TRUE))
 # get the common odds ratio and its 95% confidence interval
 logOR <- mod_PO_MRCLEAN@coefficients["group"]
@@ -771,8 +772,8 @@ cOR <- c(exp(logOR),exp(logOR-1.96*se.logOR),exp(logOR+1.96*se.logOR))
 4.  Likelihood ratio test for the proportional odds assumption
 
 ```{r}
-POA.LRT <- Perform_test(y0=df_MR_CLEAN$mRS[df_MR_CLEAN$group==0],
-                             y1=df_MR_CLEAN$mRS[df_MR_CLEAN$group==1],
+POA.LRT <- Perform_test(y0=df_MR_CLEAN$mRS6[df_MR_CLEAN$group==0],
+                             y1=df_MR_CLEAN$mRS6[df_MR_CLEAN$group==1],
                              test.type = "POA_LRT",
                         detail = TRUE)
 ```
@@ -782,18 +783,18 @@ POA.LRT <- Perform_test(y0=df_MR_CLEAN$mRS[df_MR_CLEAN$group==0],
 ```{r,warning=FALSE}
 #| fig-cap: "An exmaple of cumulative odds ratio plot for the MR CLEAN trial. The plot shows five observed cumulative binary odds ratios with 95% confidence intervals for each cut-point of the ordinal mRS outcome. The orange dashed lines show the common odds ratio based on the proportional assumption. p-value for the proportional odds assumption is from the likelihood ratio test."
 # prepare the data frame
-ORs_df <- data.frame(cbind(0:6,rbind(binary_ORs, cOR)))
+ORs_df <- data.frame(cbind(1:6,rbind(binary_ORs, cOR)))
 colnames(ORs_df) <- c("label","estimate","lower","upper")
-ORs_df$label <- factor(ORs_df$label,levels=0:6,
-                       labels = c(paste0("mRS <= ",0:5),"common OR"))
+ORs_df$label <- factor(ORs_df$label,levels=1:6,
+                       labels = c(paste0("mRS <= ",1:5),"common OR"))
 
 # add extra rows under PO
 ORs_df <- rbind(ORs_df,ORs_df)
-ORs_df[8:14,2:4] <- t(replicate(7,cOR))
-ORs_df$type <- rep(c("Observed","Under PO assumption"),each=7)
-ORs_df2 <- ORs_df[14,1:4]
+ORs_df[7:12,2:4] <- t(replicate(6,cOR))
+ORs_df$type <- rep(c("Observed","Under PO assumption"),each=6)
+ORs_df2 <- ORs_df[12,1:4]
 plot.MR.CLEAN <- ggplot() +
-  geom_pointrange(data=ORs_df[1:13,],
+  geom_pointrange(data=ORs_df[1:11,],
                   aes(x=label, y=estimate, 
                   ymin=lower, ymax=upper,
                   color=type,linetype=type),
@@ -801,13 +802,13 @@ plot.MR.CLEAN <- ggplot() +
                   size=0.5) + 
   geom_hline(yintercept=1, lty=2,color="coral",linewidth=0.8) +  
   coord_flip()+  # flip coordinates (puts labels on y axis)
-  annotate("text",x=2.5,y=30,
+  annotate("text",x=2.5,y=3.5,
            label=paste0("Test for PO assumption\np = ",round(POA.LRT$pval,4),
                         "\nLR = ",round(POA.LRT$teststat,2),
                         "\ndf = ",POA.LRT$df),
            color="coral")+
   scale_x_discrete(limits=rev(levels(ORs_df$label)))+
-  scale_y_continuous(trans = "log2",limits = c(0.5,60))+
+  scale_y_continuous(trans = "log2",limits = c(0.5,5))+
   labs(x="",y="Odds Ratio (95% CI)")+
   theme_light()+
   theme(
@@ -824,7 +825,7 @@ plot.MR.CLEAN <- ggplot() +
 plot.MR.CLEAN
 ```
 
-### ANGEL-ASPECT trial (Figure 2A)
+### ANGEL-ASPECT trial (Figure 3A)
 
 The original trial report is [@huo2023].
 
@@ -895,7 +896,7 @@ plot.ANGEL <-  ggplot() +
 plot.ANGEL
 ```
 
-### RESCUEicp trial (Figure 2B)
+### RESCUEicp trial (Figure 3B)
 
 The original trial report is [@hutchinson2016].
 
